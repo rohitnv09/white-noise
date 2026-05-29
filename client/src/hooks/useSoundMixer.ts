@@ -11,6 +11,7 @@ export interface ActiveSound {
 
 interface MixerState {
   activeSounds: Record<string, ActiveSound>;
+  soundVolumes: Record<string, number>;
   masterVolume: number;
   toggleSound: (soundId: string, defaultVolume?: number) => void;
   setSoundVolume: (soundId: string, volume: number) => void;
@@ -26,6 +27,7 @@ interface MixerState {
 
 export const useMixerStore = create<MixerState>((set, get) => ({
   activeSounds: {},
+  soundVolumes: {},
   masterVolume: 0.7,
 
   toggleSound: (soundId: string, defaultVolume = 0.6) => {
@@ -33,14 +35,21 @@ export const useMixerStore = create<MixerState>((set, get) => ({
       const existing = state.activeSounds[soundId];
       if (existing) {
         const { [soundId]: _, ...rest } = state.activeSounds;
-        return { activeSounds: rest };
+        return {
+          activeSounds: rest,
+          soundVolumes: {
+            ...state.soundVolumes,
+            [soundId]: existing.volume,
+          },
+        };
       }
+      const volume = state.soundVolumes[soundId] ?? defaultVolume;
       return {
         activeSounds: {
           ...state.activeSounds,
           [soundId]: {
             soundId,
-            volume: defaultVolume,
+            volume,
             isPlaying: false,
             isLoading: false,
             error: null,
@@ -58,6 +67,10 @@ export const useMixerStore = create<MixerState>((set, get) => ({
         activeSounds: {
           ...state.activeSounds,
           [soundId]: { ...sound, volume },
+        },
+        soundVolumes: {
+          ...state.soundVolumes,
+          [soundId]: volume,
         },
       };
     });
@@ -106,6 +119,7 @@ export const useMixerStore = create<MixerState>((set, get) => ({
 
   loadProfile: (profile: Profile) => {
     const activeSounds: Record<string, ActiveSound> = {};
+    const soundVolumes: Record<string, number> = {};
     for (const entry of profile.sounds) {
       activeSounds[entry.soundId] = {
         soundId: entry.soundId,
@@ -114,11 +128,12 @@ export const useMixerStore = create<MixerState>((set, get) => ({
         isLoading: false,
         error: null,
       };
+      soundVolumes[entry.soundId] = entry.volume;
     }
-    set({ activeSounds, masterVolume: profile.masterVolume });
+    set({ activeSounds, soundVolumes, masterVolume: profile.masterVolume });
   },
 
-  reset: () => set({ activeSounds: {}, masterVolume: 0.7 }),
+  reset: () => set({ activeSounds: {}, soundVolumes: {}, masterVolume: 0.7 }),
 
   getActiveSoundsList: () => Object.values(get().activeSounds),
 

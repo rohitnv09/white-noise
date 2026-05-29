@@ -1,10 +1,11 @@
 interface AudioChannel {
   id: string;
-  buffer: AudioBuffer | null;
-  sourceNode: AudioBufferSourceNode | null;
+  audio: HTMLAudioElement;
+  sourceNode: MediaElementAudioSourceNode;
   gainNode: GainNode;
   isPlaying: boolean;
   isLoading: boolean;
+  stopTimer: number | null;
 }
 
 const FADE_DURATION = 0.5;
@@ -15,8 +16,6 @@ export class NatureAudioEngine {
   private masterGain: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
   private channels = new Map<string, AudioChannel>();
-  private bufferCache = new Map<string, AudioBuffer>();
-  private loadingPromises = new Map<string, Promise<AudioBuffer>>();
 
   private initContext(): AudioContext {
     if (!this.context) {
@@ -42,47 +41,29 @@ export class NatureAudioEngine {
   private getOrCreateChannel(ctx: AudioContext, soundId: string): AudioChannel {
     let channel = this.channels.get(soundId);
     if (!channel) {
+      const audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      audio.loop = true;
+      audio.preload = 'auto';
+
+      const sourceNode = ctx.createMediaElementSource(audio);
       const gainNode = ctx.createGain();
       gainNode.gain.value = 0;
+      sourceNode.connect(gainNode);
       gainNode.connect(this.masterGain!);
+
       channel = {
         id: soundId,
-        buffer: null,
-        sourceNode: null,
+        audio,
+        sourceNode,
         gainNode,
         isPlaying: false,
         isLoading: false,
+        stopTimer: null,
       };
       this.channels.set(soundId, channel);
     }
     return channel;
-  }
-
-  private async loadSound(ctx: AudioContext, soundId: string, url: string): Promise<AudioBuffer> {
-    const cached = this.bufferCache.get(soundId);
-    if (cached) return cached;
-
-    const existing = this.loadingPromises.get(soundId);
-    if (existing) return existing;
-
-    const promise = fetch(url)
-      .then(response => {
-        if (!response.ok) throw new Error(`Failed to fetch audio: ${response.status}`);
-        return response.arrayBuffer();
-      })
-      .then(arrayBuffer => ctx.decodeAudioData(arrayBuffer))
-      .then(audioBuffer => {
-        this.bufferCache.set(soundId, audioBuffer);
-        this.loadingPromises.delete(soundId);
-        return audioBuffer;
-      })
-      .catch(err => {
-        this.loadingPromises.delete(soundId);
-        throw err;
-      });
-
-    this.loadingPromises.set(soundId, promise);
-    return promise;
   }
 
   async play(soundId: string, url: string, volume: number): Promise<void> {
@@ -91,42 +72,35 @@ export class NatureAudioEngine {
 
     if (channel.isPlaying) return;
 
+    if (channel.stopTimer !== null) {
+      window.clearTimeout(channel.stopTimer);
+      channel.stopTimer = null;
+    }
+
     channel.isLoading = true;
-    const buffer = await this.loadSound(ctx, soundId, url);
-    channel.buffer = buffer;
-    channel.isLoading = false;
-
-    // Re-check after async gap — user may have toggled off while loading
-    if (!this.channels.has(soundId)) return;
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-    source.connect(channel.gainNode);
+    if (channel.audio.src !== url) {
+      channel.audio.src = url;
+      channel.audio.load();
+    }
 
     const now = ctx.currentTime;
     channel.gainNode.gain.cancelScheduledValues(now);
     channel.gainNode.gain.setValueAtTime(0, now);
     channel.gainNode.gain.linearRampToValueAtTime(volume, now + FADE_DURATION);
 
-    source.start(0);
-    channel.sourceNode = source;
-    channel.isPlaying = true;
-
-    source.onended = () => {
-      if (channel.sourceNode === source) {
-        channel.isPlaying = false;
-        channel.sourceNode = null;
-      }
-    };
+    try {
+      await channel.audio.play();
+      channel.isPlaying = true;
+    } finally {
+      channel.isLoading = false;
+    }
   }
 
   stop(soundId: string): void {
     const channel = this.channels.get(soundId);
-    if (!channel?.isPlaying || !channel.sourceNode || !this.context) return;
+    if (!channel?.isPlaying || !this.context) return;
 
     const ctx = this.context;
-    const source = channel.sourceNode;
     const gain = channel.gainNode;
     const now = ctx.currentTime;
 
@@ -135,15 +109,10 @@ export class NatureAudioEngine {
     gain.gain.linearRampToValueAtTime(0, now + FADE_DURATION);
 
     channel.isPlaying = false;
-    channel.sourceNode = null;
 
-    setTimeout(() => {
-      try {
-        source.stop();
-        source.disconnect();
-      } catch {
-        // Source may already be stopped
-      }
+    channel.stopTimer = window.setTimeout(() => {
+      channel.audio.pause();
+      channel.stopTimer = null;
     }, FADE_DURATION * 1000 + 50);
   }
 
@@ -187,19 +156,16 @@ export class NatureAudioEngine {
 
   dispose(): void {
     for (const channel of this.channels.values()) {
-      if (channel.sourceNode) {
-        try {
-          channel.sourceNode.stop();
-          channel.sourceNode.disconnect();
-        } catch {
-          // Ignore
-        }
+      if (channel.stopTimer !== null) {
+        window.clearTimeout(channel.stopTimer);
       }
+      channel.audio.pause();
+      channel.audio.removeAttribute('src');
+      channel.audio.load();
+      channel.sourceNode.disconnect();
       channel.gainNode.disconnect();
     }
     this.channels.clear();
-    this.bufferCache.clear();
-    this.loadingPromises.clear();
     if (this.context) {
       void this.context.close();
       this.context = null;

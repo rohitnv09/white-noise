@@ -30,10 +30,11 @@ export function SoundCard({ sound }: SoundCardProps) {
       engine.stop(sound.id);
       toggleSound(sound.id);
     } else {
+      const rememberedVolume = useMixerStore.getState().soundVolumes[sound.id] ?? sound.defaultVolume;
       toggleSound(sound.id, sound.defaultVolume);
       setSoundLoading(sound.id, true);
       try {
-        await engine.play(sound.id, sound.audioUrl, sound.defaultVolume);
+        await engine.play(sound.id, sound.audioUrl, rememberedVolume);
         setSoundPlaying(sound.id, true);
       } catch (err) {
         setSoundError(sound.id, err instanceof Error ? err.message : 'Failed to load');
